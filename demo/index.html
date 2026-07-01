@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>@dotgui/embed — demo</title>
+<style>
+  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; color: #1a1a1a; background: #fafafa; padding: 40px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.lead { color: #666; margin: 0 0 32px; }
+  section { margin: 0 0 40px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: #888; margin: 0 0 12px; }
+  code { background: #ececec; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .frame { border: 1px solid #e2e2e2; border-radius: 12px; background: #fff; display: inline-block; }
+</style>
+
+<h1>@dotgui/embed</h1>
+<p class="lead">One element: <code>&lt;gui-embed&gt;</code>. Inline content via a <code>&lt;script type="application/gui"&gt;</code> child, or <code>src</code> for a file. No chrome by default; add booleans for the widget.</p>
+
+<section>
+  <h2>1 · Standalone preview — inline content, no chrome</h2>
+  <p class="lead">Sizes to the file's native size. Parser-safe (the <code>&lt;col&gt;</code> survives).</p>
+  <gui-embed>
+    <script type="application/gui">
+      <gui version="0.2" name="Chip" w="220" h="72">
+        <col w="220" h="72" fill="#1E1B2E" radius="16" p="0 20" gap="12" align="middle-left">
+          <row gap="12" align="middle-left">
+            <rect w="14" h="14" radius="7" fill="#A78BFA" />
+            <text value="dotgui" font-size="20" font-weight="700" color="#FFFFFF" />
+          </row>
+        </col>
+      </gui>
+    </script>
+  </gui-embed>
+</section>
+
+<section>
+  <h2>2 · Standalone preview — external file via src</h2>
+  <p class="lead">Fetched, unzipped, rendered. Width fixed; height follows the file's ratio.</p>
+  <div class="frame">
+    <gui-embed src="weather.gui" style="width: 300px;"></gui-embed>
+  </div>
+</section>
+
+<section>
+  <h2>3 · Widget — fixed canvas + controls + dot grid</h2>
+  <p class="lead"><code>zoom download copy grid</code> — hover to reveal the bar. Center-center, scaled to fit.</p>
+  <div class="frame">
+    <gui-embed src="weather.gui" style="width: 360px; height: 460px;" zoom download copy mode-switch grid></gui-embed>
+  </div>
+</section>
+
+<script src="../dist/gui-embed.js"></script>

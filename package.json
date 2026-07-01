@@ -1,0 +1,34 @@
+{
+  "name": "@dotgui/embed",
+  "version": "0.1.0",
+  "description": "Drop-in browser layer that renders .gui files anywhere. A thin wrapper over @dotgui/kit's renderer — one CDN script, zero dependencies for the consumer.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/gui-embed.esm.js",
+  "module": "./dist/gui-embed.esm.js",
+  "types": "./src/index.ts",
+  "unpkg": "./dist/gui-embed.js",
+  "jsdelivr": "./dist/gui-embed.js",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": ["dist/", "src/", "README.md"],
+  "scripts": {
+    "build": "bun run build:cdn && bun run build:esm",
+    "build:cdn": "bun build ./src/auto.ts --outfile ./dist/gui-embed.js --format iife --minify",
+    "build:esm": "bun build ./src/index.ts --outfile ./dist/gui-embed.esm.js --format esm --minify",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["dotgui", "gui", "embed", "web-component", "cdn", "renderer"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dotgui/embed"
+  },
+  "dependencies": {
+    "@dotgui/kit": "^0.1.0"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "typescript": "^5.0.0"
+  }
+}
