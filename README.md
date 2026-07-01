@@ -4,7 +4,7 @@ Render `.gui` files anywhere in the browser. A thin layer over [`@dotgui/kit`](.
 renderer — one CDN script, **zero dependencies** for the consumer.
 
 ```html
-<script src="https://cdn.dotgui.com/gui-embed.js"></script>
+<script src="https://unpkg.com/@dotgui/embed"></script>
 ```
 
 One element does everything: **`<gui-embed>`**. It's the explicit "render a gui here"

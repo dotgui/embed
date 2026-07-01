@@ -1,7 +1,7 @@
 /**
  * CDN entry — side-effecting. Loading this script auto-registers everything:
  *
- *   <script src="https://cdn.dotgui.com/gui-embed.js"></script>
+ *   <script src="https://unpkg.com/@dotgui/embed"></script>
  *
  * After this, any `<gui>` or `<gui-embed>` on the page renders with no further
  * code. This is the zero-friction path (e.g. an AI emitting a renderable .gui).
