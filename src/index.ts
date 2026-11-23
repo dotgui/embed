@@ -1,7 +1,8 @@
 /**
  * @dotgui/embed — render .gui files anywhere in the browser.
  *
- * A thin layer over @dotgui/kit's renderer. One element:
+ * A thin player over `@dotgui/render`'s `<gui-canvas>`: the Rust renderer,
+ * compiled to WebAssembly. One element:
  *
  *   <gui-embed src="x.gui"></gui-embed>            external file
  *   <gui-embed>                                    inline file (parser-safe)
@@ -14,15 +15,16 @@
  * The CDN build (`gui-embed.js`) calls `install()` automatically. When importing
  * as a module, call `install()` (or `defineGuiEmbed()`) yourself.
  */
-export { GuiEmbedElement, defineGuiEmbed } from './gui-embed'
-export { fetchGui, decodeBytes, decodeMarkup, type Decoded } from './decode'
-export { detectModes, switchableAxes, type ModeAxis } from './modes'
-
+import '@dotgui/render/canvas'
 import { defineGuiEmbed } from './gui-embed'
+
+export { GuiEmbedElement, defineGuiEmbed } from './gui-embed'
+export { GuiCanvas, config } from '@dotgui/render/canvas'
+export type { ModeAxis, GuiPage, RenderDetail } from '@dotgui/render/canvas'
 
 let installed = false
 
-/** Register the `<gui-embed>` custom element. Idempotent. */
+/** Register the `<gui-embed>` custom element (and `<gui-canvas>`). Idempotent. */
 export function install() {
   if (installed || typeof window === 'undefined') return
   installed = true

@@ -5,56 +5,66 @@
  * lives on `<gui>`. Everything here is host vocabulary, expressed in CSS:
  *
  *   <gui-embed style="width:100vw;height:100vh" zoom download copy mode-switch>
- *     <gui w="300" h="300"> … </gui>
+ *     <script type="application/gui"> <gui w="300" h="300"> … </gui> </script>
  *   </gui-embed>
  *
- *   <gui-embed src="hero.gui" style="width:400px;aspect-ratio:auto"></gui-embed>
+ *   <gui-embed src="hero.gui" style="width:400px"></gui-embed>
  *
- * The file is placed center-center, scaled to fit the canvas. Controls are
- * individual boolean attributes — present = on. `zoom` defaults on (it is a
- * player); `download`, `copy`, `mode-switch` default off.
+ * The drawing is `@dotgui/render`'s `<gui-canvas>`: the Rust renderer, as
+ * WebAssembly, in a worker. This element only places it — center-center,
+ * scaled to fit — and adds the player around it. Controls are individual
+ * boolean attributes — present = on. `zoom` defaults on (it is a player);
+ * `download`, `copy`, `mode-switch` default off.
  */
-import { render, type ZoomControl } from '@dotgui/kit/render'
-import {
-  fetchGui,
-  decodeMarkup,
-  revokeAssets,
-  toGuiBytes,
-  type Decoded,
-} from './decode'
-import { detectModes, switchableAxes, type ModeAxis } from './modes'
+import type { GuiCanvas, ModeAxis, RenderDetail } from '@dotgui/render/canvas'
+import { pack } from '@dotgui/kit/package'
 
 const TAG = 'gui-embed'
 
+/** How far a zoom may go, as a multiple of the fitted scale. */
+const MIN_ZOOM = 0.25
+const MAX_ZOOM = 8
+
 export class GuiEmbedElement extends HTMLElement {
-  private _canvas!: HTMLDivElement
+  private _stage!: HTMLDivElement
+  private _view!: HTMLDivElement
+  private _canvas!: GuiCanvas
   private _bar!: HTMLDivElement
-  private _zoomCtl: ZoomControl | null = null
-  private _decoded: Decoded | null = null
-  private _modes: Record<string, ModeAxis> = {}
-  private _mode: Record<string, string> = {}
   private _ro: ResizeObserver | null = null
+  /** The bytes shown, kept for download: a fetched file as it came, or inline markup. */
+  private _bytes: Uint8Array | null = null
+  private _markup = ''
+  /** The document's size in document pixels, once drawn. */
+  private _size: { width: number; height: number } | null = null
+  /** The view: scale, and the document's top-left in the stage. */
+  private _scale = 1
+  private _x = 0
+  private _y = 0
   /** True once the user pans/zooms — stops auto-fit from snapping their view back. */
   private _userZoomed = false
+  private _settle: ReturnType<typeof setTimeout> | null = null
 
   static get observedAttributes() {
     return ['src']
   }
 
   connectedCallback() {
-    if (!this._canvas) this._build()
+    if (!this._stage) this._build()
     void this._load()
   }
 
   disconnectedCallback() {
     this._ro?.disconnect()
     this._ro = null
-    if (this._decoded) revokeAssets(this._decoded.assetMap)
-    this._decoded = null
   }
 
   attributeChangedCallback(name: string) {
-    if (name === 'src' && this._canvas) void this._load()
+    if (name === 'src' && this._stage) void this._load()
+  }
+
+  /** The `<gui-canvas>` drawing the file. */
+  get canvas(): GuiCanvas {
+    return this._canvas
   }
 
   // ── DOM scaffold ──────────────────────────────────────────────────────────
@@ -65,13 +75,13 @@ export class GuiEmbedElement extends HTMLElement {
     if (cs.display === 'inline') this.style.display = 'block'
     this.style.overflow = 'hidden'
 
-    const canvas = document.createElement('div')
-    canvas.className = 'gui-embed-canvas'
-    // The dot grid is the CANVAS, not the file — it signals "this is rendered in
+    const stage = document.createElement('div')
+    stage.className = 'gui-embed-canvas'
+    // The dot grid is the STAGE, not the file — it signals "this is rendered in
     // a dotgui surface" and stays behind the file. Toggle with `grid="false"`.
     const dots = this.getAttribute('grid') !== 'false'
-    canvas.style.cssText = [
-      'position:absolute;inset:0',
+    stage.style.cssText = [
+      'position:absolute;inset:0;touch-action:none',
       'background-color:var(--gui-embed-bg, #fafaf8)',
       dots
         ? 'background-image:radial-gradient(var(--gui-embed-dot, rgba(0,0,0,.14)) 1px, transparent 1.4px);background-size:var(--gui-embed-dot-gap, 18px) var(--gui-embed-dot-gap, 18px);background-position:center'
@@ -79,17 +89,27 @@ export class GuiEmbedElement extends HTMLElement {
     ]
       .filter(Boolean)
       .join(';')
-    this.appendChild(canvas)
+    this.appendChild(stage)
+    this._stage = stage
+
+    const view = document.createElement('div')
+    // max-content: the canvas keeps its document size here, and the view scales it.
+    view.style.cssText = 'position:absolute;left:0;top:0;width:max-content;transform-origin:0 0'
+    stage.appendChild(view)
+    this._view = view
+
+    const canvas = document.createElement('gui-canvas') as GuiCanvas
+    canvas.addEventListener('render', (event) => this._rendered((event as CustomEvent<RenderDetail>).detail))
+    canvas.addEventListener('error', (event) => this._fail((event as CustomEvent<{ message: string }>).detail.message))
+    view.appendChild(canvas)
     this._canvas = canvas
 
-    // A pan/zoom canvas fits its content to the container size. When the
-    // container resizes (responsive width, async aspect-ratio, font reflow),
-    // refit — unless the user has taken over the viewport.
-    const markUser = () => (this._userZoomed = true)
-    canvas.addEventListener('wheel', markUser, { passive: true })
-    canvas.addEventListener('pointerdown', markUser)
+    this._bindZoom()
+
+    // When the container resizes (responsive width, async aspect-ratio), refit —
+    // unless the user has taken over the viewport.
     this._ro = new ResizeObserver(() => {
-      if (!this._userZoomed) this._zoomCtl?.(1)
+      if (!this._userZoomed) this.fit()
     })
     this._ro.observe(this)
 
@@ -111,75 +131,151 @@ export class GuiEmbedElement extends HTMLElement {
   // ── load + render ───────────────────────────────────────────────────────────
 
   private async _load() {
+    this._size = null
+    this._userZoomed = false
+    this._canvas.mode = {}
     try {
-      let decoded: Decoded
       const src = this.getAttribute('src')
       if (src) {
-        decoded = await fetchGui(src)
+        const response = await fetch(src)
+        if (!response.ok) throw new Error(`gui-embed: failed to fetch "${src}" (${response.status})`)
+        this._bytes = new Uint8Array(await response.arrayBuffer())
+        this._markup = ''
+        await this._canvas.loadBytes(this._bytes)
       } else {
         // Inline content lives in a <script type="application/gui"> child — raw
         // text the HTML parser never mangles (so `<col>`/`<img>` survive).
         const script = this.querySelector(':scope > script[type="application/gui"]')
-        if (!script) return
-        decoded = decodeMarkup(script.textContent ?? '')
+        if (!script) {
+          // The CDN script defines this element before the parser has reached
+          // its children: look again once the document is parsed.
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => void this._load(), { once: true })
+          }
+          return
+        }
+        this._bytes = null
+        this._markup = script.textContent ?? ''
+        await this._canvas.loadMarkup(this._markup)
       }
-
-      if (this._decoded) revokeAssets(this._decoded.assetMap)
-      this._decoded = decoded
-      this._userZoomed = false
-
-      this._modes = detectModes(decoded.xml)
-      this._mode = {}
-      for (const [axis, ax] of Object.entries(this._modes)) this._mode[axis] = ax.default
-
-      this._render()
       this._buildControls()
     } catch (err) {
-      this._canvas.textContent = String((err as Error)?.message ?? err)
-      this._canvas.style.cssText +=
-        ';display:flex;align-items:center;justify-content:center;font:13px system-ui;color:#c00;padding:12px;text-align:center'
+      this._fail(String((err as Error)?.message ?? err))
     }
   }
 
-  private _render() {
-    if (!this._decoded) return
-    const { xml, assetMap } = this._decoded
-    const interactive = this.getAttribute('zoom') !== 'false' // default on
+  private _fail(message: string) {
+    let note = this.querySelector(':scope > .gui-embed-error') as HTMLDivElement | null
+    if (!note) {
+      note = document.createElement('div')
+      note.className = 'gui-embed-error'
+      note.style.cssText =
+        'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:13px system-ui;color:#c00;padding:12px;text-align:center'
+      this.appendChild(note)
+    }
+    note.textContent = message
+  }
 
-    // The pan/zoom canvas fits content to the container, so it MUST render into a
-    // sized box — fitting against a zero-height container produces a broken
-    // transform that a later refit can't recover. When the author only fixed a
-    // width, do a cheap native-size pass first to learn the ratio, set the
-    // aspect-ratio (giving the canvas a real height), then render the zoom canvas.
+  /** A frame arrived: size the host on the first, and keep the view fitted. */
+  private _rendered(detail: RenderDetail) {
+    this.querySelector(':scope > .gui-embed-error')?.remove()
+    const first = !this._size || this._size.width !== detail.width || this._size.height !== detail.height
+    this._size = { width: detail.width, height: detail.height }
+    if (!first) return
     if (!this._hasHeight()) {
-      render(xml, this._canvas, assetMap, { mode: this._mode }) // native size, no zoom
-      const screen = this._canvas.querySelector('.gui-relative') as HTMLElement | null
-      const w = screen?.offsetWidth ?? 0
-      const h = screen?.offsetHeight ?? 0
-      if (w > 0 && h > 0) {
-        if (this.style.width) {
-          // Author fixed a width → derive height from the file's ratio.
-          this.style.aspectRatio = `${w} / ${h}`
-        } else {
-          // No CSS size at all → size to the file's native dimensions, like an SVG.
-          this.style.width = `${w}px`
-          this.style.height = `${h}px`
-        }
+      if (this.style.width) {
+        // Author fixed a width → derive height from the file's ratio.
+        this.style.aspectRatio = `${detail.width} / ${detail.height}`
+      } else {
+        // No CSS size at all → size to the file's native dimensions, like an SVG.
+        this.style.width = `${detail.width}px`
+        this.style.height = `${detail.height}px`
       }
-      requestAnimationFrame(() => {
-        this._zoomCtl = render(xml, this._canvas, assetMap, { zoom: interactive, mode: this._mode })
-      })
-      return
     }
-
-    this._zoomCtl = render(xml, this._canvas, assetMap, { zoom: interactive, mode: this._mode })
+    if (!this._userZoomed) this.fit()
   }
 
-  /** Whether the canvas already has a usable height (fixed by CSS or aspect-ratio). */
+  /** Whether the host already has a usable height (fixed by CSS or aspect-ratio). */
   private _hasHeight(): boolean {
     if (this.style.height || this.style.aspectRatio) return true
-    const h = getComputedStyle(this).height
-    return !!h && h !== 'auto' && parseFloat(h) > 1
+    const cs = getComputedStyle(this)
+    if (cs.aspectRatio && cs.aspectRatio !== 'auto') return true
+    return this.clientHeight > 1
+  }
+
+  // ── pan + zoom ──────────────────────────────────────────────────────────────
+
+  /** Places the document center-center, scaled to fit, and hands the view back to auto-fit. */
+  fit() {
+    if (!this._size) return
+    const { width, height } = this._size
+    const box = this._stage.getBoundingClientRect()
+    if (box.width < 1 || box.height < 1) return
+    this._scale = Math.min(box.width / width, box.height / height)
+    this._x = (box.width - width * this._scale) / 2
+    this._y = (box.height - height * this._scale) / 2
+    this._userZoomed = false
+    this._apply()
+  }
+
+  /** Zooms by `factor` about a point in the stage (its center by default). */
+  zoomBy(factor: number, anchorX?: number, anchorY?: number) {
+    if (!this._size) return
+    const box = this._stage.getBoundingClientRect()
+    const fitted = Math.min(box.width / this._size.width, box.height / this._size.height)
+    const next = Math.min(Math.max(this._scale * factor, fitted * MIN_ZOOM), fitted * MAX_ZOOM)
+    const ax = anchorX ?? box.width / 2
+    const ay = anchorY ?? box.height / 2
+    this._x = ax - ((ax - this._x) * next) / this._scale
+    this._y = ay - ((ay - this._y) * next) / this._scale
+    this._scale = next
+    this._userZoomed = true
+    this._apply()
+  }
+
+  private _apply() {
+    this._view.style.transform = `translate(${this._x}px, ${this._y}px) scale(${this._scale})`
+    // Draw sharp at the zoom the view settles on, not at every wheel tick.
+    if (this._settle) clearTimeout(this._settle)
+    this._settle = setTimeout(() => {
+      const density = Math.min(Math.max(2, Math.ceil((window.devicePixelRatio || 1) * this._scale)), 4)
+      if (Number(this._canvas.getAttribute('density')) !== density) this._canvas.setAttribute('density', String(density))
+    }, 150)
+  }
+
+  private _bindZoom() {
+    const stage = this._stage
+    const enabled = () => this.getAttribute('zoom') !== 'false'
+    stage.addEventListener(
+      'wheel',
+      (event) => {
+        // Pinch on a trackpad and ctrl/⌘ + wheel zoom; a plain wheel scrolls the page.
+        if (!enabled() || !(event.ctrlKey || event.metaKey)) return
+        event.preventDefault()
+        const box = stage.getBoundingClientRect()
+        this.zoomBy(Math.exp(-event.deltaY * 0.01), event.clientX - box.left, event.clientY - box.top)
+      },
+      { passive: false },
+    )
+    let drag: { id: number; x: number; y: number } | null = null
+    stage.addEventListener('pointerdown', (event) => {
+      if (!enabled() || event.button !== 0) return
+      drag = { id: event.pointerId, x: event.clientX, y: event.clientY }
+      stage.setPointerCapture(event.pointerId)
+    })
+    stage.addEventListener('pointermove', (event) => {
+      if (!drag || drag.id !== event.pointerId) return
+      this._x += event.clientX - drag.x
+      this._y += event.clientY - drag.y
+      drag.x = event.clientX
+      drag.y = event.clientY
+      this._userZoomed = true
+      this._view.style.transform = `translate(${this._x}px, ${this._y}px) scale(${this._scale})`
+    })
+    const end = () => (drag = null)
+    stage.addEventListener('pointerup', end)
+    stage.addEventListener('pointercancel', end)
+    stage.addEventListener('dblclick', () => enabled() && this.fit())
   }
 
   // ── controls ────────────────────────────────────────────────────────────────
@@ -189,18 +285,19 @@ export class GuiEmbedElement extends HTMLElement {
     bar.innerHTML = ''
 
     if (this.getAttribute('zoom') !== 'false') {
-      bar.appendChild(this._btn('Fit', 'Reset zoom', () => this._zoomCtl?.(1)))
+      bar.appendChild(this._btn('Fit', 'Reset zoom', () => this.fit()))
     }
 
-    const axes = switchableAxes(this._modes)
+    const modes = this._canvas.modes
+    const axes = Object.keys(modes).filter((axis) => modes[axis].values.length > 1)
     if (this.hasAttribute('mode-switch') && axes.length) {
-      for (const axis of axes) bar.appendChild(this._modeSelect(axis))
+      for (const axis of axes) bar.appendChild(this._modeSelect(axis, modes[axis]))
     }
 
     if (this.hasAttribute('copy')) {
       bar.appendChild(
         this._btn('Copy', 'Copy .gui markup', async () => {
-          if (this._decoded) await navigator.clipboard.writeText(this._decoded.xml)
+          await navigator.clipboard.writeText(this._canvas.source)
         }),
       )
     }
@@ -217,41 +314,33 @@ export class GuiEmbedElement extends HTMLElement {
     b.type = 'button'
     b.textContent = label
     b.title = title
-    b.style.cssText = [
-      'all:unset;cursor:pointer;font:600 12px/1 system-ui',
-      'color:#fff;padding:6px 9px;border-radius:5px',
-    ].join(';')
+    b.style.cssText = ['all:unset;cursor:pointer;font:600 12px/1 system-ui', 'color:#fff;padding:6px 9px;border-radius:5px'].join(';')
     b.addEventListener('pointerenter', () => (b.style.background = 'rgba(255,255,255,.18)'))
     b.addEventListener('pointerleave', () => (b.style.background = 'transparent'))
     b.addEventListener('click', onClick)
     return b
   }
 
-  private _modeSelect(axis: string): HTMLSelectElement {
+  private _modeSelect(axis: string, mode: ModeAxis): HTMLSelectElement {
     const sel = document.createElement('select')
     sel.title = `Mode: ${axis}`
-    sel.style.cssText = [
-      'all:unset;cursor:pointer;font:600 12px/1 system-ui',
-      'color:#fff;padding:6px 9px;border-radius:5px',
-    ].join(';')
-    for (const value of this._modes[axis].values) {
+    sel.style.cssText = ['all:unset;cursor:pointer;font:600 12px/1 system-ui', 'color:#fff;padding:6px 9px;border-radius:5px'].join(';')
+    const current = this._canvas.mode[axis] ?? mode.default
+    for (const value of mode.values) {
       const opt = document.createElement('option')
       opt.value = value
       opt.textContent = value
       opt.style.color = '#000'
-      if (value === this._mode[axis]) opt.selected = true
+      if (value === current) opt.selected = true
       sel.appendChild(opt)
     }
-    sel.addEventListener('change', () => {
-      this._mode[axis] = sel.value
-      this._render() // re-render the active mode; renderer switches via tokens
-    })
+    // The renderer switches via tokens; the markup is unchanged.
+    sel.addEventListener('change', () => this._canvas.setMode(axis, sel.value))
     return sel
   }
 
   private _download() {
-    if (!this._decoded) return
-    const bytes = toGuiBytes(this._decoded.pkg)
+    const bytes = this._bytes ?? pack({ xml: this._markup, assets: {} })
     const name = (this.getAttribute('src')?.split('/').pop() || 'design.gui').replace(/\.guix$/, '.gui')
     const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: 'application/octet-stream' }))
     const a = document.createElement('a')

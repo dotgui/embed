@@ -1,7 +1,9 @@
 # @dotgui/embed
 
-Render `.gui` files anywhere in the browser. A thin layer over [`@dotgui/kit`](../kit)'s
-renderer — one CDN script, **zero dependencies** for the consumer.
+Render `.gui` files anywhere in the browser. A thin player over
+[`@dotgui/render`](https://www.npmjs.com/package/@dotgui/render)'s `<gui-canvas>` — the
+Rust renderer, compiled to WebAssembly — one CDN script, **zero dependencies** for the
+consumer.
 
 ```html
 <script src="https://unpkg.com/@dotgui/embed"></script>
@@ -30,8 +32,9 @@ raw text the HTML parser never touches — so a full `.gui` survives verbatim, i
 tags that collide with HTML void elements (`<col>`, `<img>`). The script is also the
 source of truth: edit it, re-render; copy/download emits it unchanged.
 
-`src` is fetched, unzipped, assets resolved to `blob:` URLs, and rendered — never shown
-raw.
+`src` is fetched and drawn by the renderer, package assets and all — never shown raw.
+Google fonts and remote images load directly; system fonts a page cannot see fall back
+to the bundled Inter.
 
 ## Standalone vs widget — same tag, just attributes
 
@@ -53,7 +56,7 @@ raw.
 
 | attr | default | effect |
 |---|---|---|
-| `zoom` | on | scroll/pinch-zoom + drag-pan, and a "Fit" reset button |
+| `zoom` | on | pinch or ⌘/ctrl + wheel to zoom, drag to pan, double-click or "Fit" to reset |
 | `grid` | on | dot-grid canvas background (the dotgui surface) |
 | `download` | off | download the `.gui` file |
 | `copy` | off | copy the `.guix` markup to the clipboard |
@@ -68,8 +71,17 @@ The CDN build self-installs. As a module:
 
 ```js
 import { install } from '@dotgui/embed'
-install() // registers <gui-embed>
+install() // registers <gui-embed> (and <gui-canvas>)
 ```
+
+`el.canvas` is the `<gui-canvas>` inside: `modes`, `mode`, `source`, `nodeAt`, `bounds`
+and the `render` / `error` events.
+
+## Accessible by default
+
+The pixels are a canvas, but the element keeps a transparent layer of the document's
+text, image `alt`s and `role=`s (as ARIA) over it — screen readers, find-in-page and
+search engines read what it shows.
 
 ## Build
 
@@ -78,5 +90,6 @@ bun run build       # → dist/gui-embed.js (IIFE, CDN) + dist/gui-embed.esm.js
 bun run typecheck
 ```
 
-Everything (`@dotgui/kit` render + parser + package, panzoom, fflate) is bundled into
-one self-contained file. Demo: `embed/demo/index.html`.
+`dist/gui-embed.js` is the player (~30 KB); the renderer's worker, WebAssembly (~1.6 MB
+gzipped) and fonts sit beside it in `dist/` and load on first use, off the main thread.
+The worker can be on another origin, so any CDN works. Demo: `embed/demo/index.html`.
