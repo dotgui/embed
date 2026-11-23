@@ -1,7 +1,7 @@
 {
   "name": "@dotgui/embed",
-  "version": "0.1.1",
-  "description": "Drop-in browser layer that renders .gui files anywhere. A thin wrapper over @dotgui/kit's renderer — one CDN script, zero dependencies for the consumer.",
+  "version": "0.4.0",
+  "description": "Drop-in browser player that renders .gui files anywhere \u2014 one CDN script. Drawn by @dotgui/render, the Rust renderer as WebAssembly.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/gui-embed.esm.js",
@@ -10,7 +10,11 @@
   "unpkg": "./dist/gui-embed.js",
   "jsdelivr": "./dist/gui-embed.js",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/gui-embed.esm.js"
+    },
+    "./dist/*": "./dist/*"
   },
   "files": [
     "dist/",
@@ -18,10 +22,9 @@
     "README.md"
   ],
   "scripts": {
-    "build": "bun run build:cdn && bun run build:esm",
-    "build:cdn": "bun build ./src/auto.ts --outfile ./dist/gui-embed.js --format iife --minify",
-    "build:esm": "bun build ./src/index.ts --outfile ./dist/gui-embed.esm.js --format esm --minify",
-    "typecheck": "tsc --noEmit"
+    "build": "bun run build.ts",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build.ts"
   },
   "keywords": [
     "dotgui",
@@ -29,14 +32,16 @@
     "embed",
     "web-component",
     "cdn",
-    "renderer"
+    "renderer",
+    "wasm"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/dotgui/embed"
   },
   "dependencies": {
-    "@dotgui/kit": "^0.1.0"
+    "@dotgui/kit": "^0.4.1",
+    "@dotgui/render": "^0.4.0"
   },
   "devDependencies": {
     "bun-types": "latest",
